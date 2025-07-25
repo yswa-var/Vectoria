@@ -1,0 +1,43 @@
+{
+  "name": "vecto-cli",
+  "version": "0.1.0",
+  "description": "A powerful personal note management system with semantic search capabilities",
+  "main": "index.js",
+  "scripts": {
+    "install": "cargo install --path .",
+    "build": "cargo build --release",
+    "test": "cargo test",
+    "clean": "cargo clean",
+    "uninstall": "cargo uninstall vecto"
+  },
+  "keywords": [
+    "cli",
+    "notes",
+    "search",
+    "embeddings",
+    "ai",
+    "vector",
+    "rust"
+  ],
+  "author": "Your Name <your.email@example.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yourusername/vecto.git"
+  },
+  "bugs": {
+    "url": "https://github.com/yourusername/vecto/issues"
+  },
+  "homepage": "https://github.com/yourusername/vecto#readme",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "bin": {
+    "vecto": "./target/release/vecto"
+  },
+  "files": [
+    "target/release/vecto",
+    "README.md",
+    "LICENSE"
+  ]
+}

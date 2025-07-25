@@ -1,0 +1,40 @@
+# Vectoria Configuration File
+# Copy this file to ~/.config/vecto/config.toml or ./vecto.toml
+
+[general]
+# Default database location (relative to current directory)
+database_path = "embeddings.db"
+
+# Default model directory
+model_dir = "models"
+
+[search]
+# Number of results to return by default
+default_results = 5
+
+# Minimum similarity threshold for search results
+min_similarity = 0.1
+
+[embedding]
+# Number of lines per chunk when processing documents
+lines_per_chunk = 10
+
+# Vocabulary size limit (0 = no limit)
+max_vocabulary_size = 0
+
+[rag]
+# OpenAI model to use for RAG
+openai_model = "gpt-3.5-turbo"
+
+# Maximum tokens for RAG responses
+max_tokens = 500
+
+# Temperature for RAG responses (0.0 = deterministic, 1.0 = creative)
+temperature = 0.7
+
+[logging]
+# Log level: debug, info, warn, error
+level = "info"
+
+# Enable colored output
+colored_output = true 
