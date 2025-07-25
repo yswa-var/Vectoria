@@ -18,11 +18,28 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(about = "Upload and process a text file for embedding")]
     Upload { file: String },
+    #[command(about = "List all stored embeddings")]
     List,
+    #[command(about = "Search for similar text chunks")]
     Search { query: String },
+    #[command(about = "Perform vector similarity search")]
     VectorSearch { query: String },
+    #[command(about = "Retrieval-Augmented Generation with context")]
     RAG { question: String },
+    #[command(about = "Store a note in memory")]
+    Remember {
+        #[arg(help = "The note to remember")]
+        note: String,
+    },
+    #[command(about = "Delete a note by ID")]
+    Forget {
+        #[arg(help = "ID of the note to delete")]
+        id: i64,
+    },
+    #[command(about = "List all stored notes")]
+    ListNotes,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,6 +50,13 @@ struct ChunkEmbedding {
     text_content: String,
     embedding: String, // JSON string of Vec<f32>
     vocabulary_size: usize,
+    created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct UserNote {
+    id: Option<i64>,
+    note: String,
     created_at: String,
 }
 
@@ -248,12 +272,21 @@ fn vector_search(
     query: &str,
     top_k: usize,
 ) -> Result<Vec<(ChunkEmbedding, f32)>> {
+    // Check if there are any embeddings in the database
+    let mut stmt = conn.prepare("SELECT COUNT(*) FROM chunk_embeddings")?;
+    let count: i64 = stmt.query_row(params![], |row| row.get(0))?;
+
+    if count == 0 {
+        // No embeddings in database, return empty result
+        return Ok(Vec::new());
+    }
+
     // Load the embedder to get vocabulary and IDF scores
     let mut embedder = SimpleEmbedder::new();
 
     // Get all stored embeddings to rebuild vocabulary
     let mut stmt = conn.prepare("SELECT DISTINCT vocabulary_size FROM chunk_embeddings ORDER BY vocabulary_size DESC LIMIT 1")?;
-    let vocab_size: usize = stmt.query_row(params![], |row| row.get(0))?;
+    let _vocab_size: usize = stmt.query_row(params![], |row| row.get(0))?;
 
     // Rebuild vocabulary from stored data (simplified approach)
     // In a real system, you'd want to store the vocabulary separately
@@ -320,6 +353,54 @@ fn vector_search(
     Ok(similarities)
 }
 
+fn search_user_notes(conn: &Connection, query: &str) -> Result<Vec<(UserNote, f32)>> {
+    let mut stmt = conn.prepare("SELECT id, note, created_at FROM user_notes")?;
+    let notes = stmt.query_map(params![], |row| {
+        Ok(UserNote {
+            id: Some(row.get(0)?),
+            note: row.get(1)?,
+            created_at: row.get(2)?,
+        })
+    })?;
+
+    let mut similarities: Vec<(UserNote, f32)> = Vec::new();
+
+    for note in notes {
+        match note {
+            Ok(user_note) => {
+                // Simple text similarity using word overlap
+                let query_lower = query.to_lowercase();
+                let note_lower = user_note.note.to_lowercase();
+                let query_words: std::collections::HashSet<&str> =
+                    query_lower.split_whitespace().collect();
+                let note_words: std::collections::HashSet<&str> =
+                    note_lower.split_whitespace().collect();
+
+                let intersection = query_words.intersection(&note_words).count();
+                let union = query_words.union(&note_words).count();
+
+                let similarity = if union > 0 {
+                    intersection as f32 / union as f32
+                } else {
+                    0.0
+                };
+
+                if similarity > 0.0 {
+                    similarities.push((user_note, similarity));
+                }
+            }
+            Err(e) => {
+                eprintln!("Error processing note: {}", e);
+            }
+        }
+    }
+
+    // Sort by similarity (descending)
+    similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+    Ok(similarities)
+}
+
 fn build_rag_prompt(context: &str, question: &str) -> String {
     format!(
         "Based on the following context, please answer the question. If the context doesn't contain enough information to answer the question, say so.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
@@ -364,18 +445,29 @@ async fn query_openai(prompt: &str, api_key: &str) -> Result<String> {
 
 async fn rag_search(conn: &Connection, question: &str, api_key: &str) -> Result<String> {
     // Get top 3 most similar chunks for context
-    let results = vector_search(conn, question, 3)?;
+    let chunk_results = vector_search(conn, question, 3)?;
 
-    if results.is_empty() {
+    // Get top 3 most similar user notes
+    let note_results = search_user_notes(conn, question)?;
+
+    let mut all_contexts: Vec<String> = Vec::new();
+
+    // Add chunk contexts
+    for (chunk, _) in chunk_results {
+        all_contexts.push(format!("[Document Chunk]: {}", chunk.text_content));
+    }
+
+    // Add note contexts
+    for (note, _) in note_results.iter().take(3) {
+        all_contexts.push(format!("[User Note]: {}", note.note));
+    }
+
+    if all_contexts.is_empty() {
         return Ok("No relevant context found to answer your question.".to_string());
     }
 
-    // Concatenate the context from top chunks
-    let context: String = results
-        .iter()
-        .map(|(chunk, _)| chunk.text_content.as_str())
-        .collect::<Vec<&str>>()
-        .join("\n\n");
+    // Concatenate all contexts
+    let context: String = all_contexts.join("\n\n");
 
     // Build the RAG prompt
     let prompt = build_rag_prompt(&context, question);
@@ -407,6 +499,17 @@ fn setup_database() -> Result<Connection> {
         )",
         params![],
     )?;
+
+    // Create user_notes table
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS user_notes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            note TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )",
+        params![],
+    )?;
+
     println!("Connected to SQLite database successfully");
     Ok(conn)
 }
@@ -657,6 +760,70 @@ async fn main() -> Result<()> {
                 }
             }
         }
+        Commands::Remember { note } => match setup_database() {
+            Ok(conn) => {
+                let now = chrono::Utc::now().to_rfc3339();
+                let result = conn.execute(
+                    "INSERT INTO user_notes (note, created_at) VALUES (?1, ?2)",
+                    params![note, now],
+                );
+                if let Err(e) = result {
+                    eprintln!("Error storing note: {}", e);
+                } else {
+                    println!("✅ Note stored successfully with ID: {}", result.unwrap());
+                }
+            }
+            Err(e) => {
+                eprintln!("Error connecting to database: {}", e);
+            }
+        },
+        Commands::Forget { id } => match setup_database() {
+            Ok(conn) => {
+                let result = conn.execute("DELETE FROM user_notes WHERE id = ?1", params![id]);
+                if let Err(e) = result {
+                    eprintln!("Error deleting note: {}", e);
+                } else {
+                    println!("🗑️ Note with ID {} deleted successfully.", id);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error connecting to database: {}", e);
+            }
+        },
+        Commands::ListNotes => match setup_database() {
+            Ok(conn) => {
+                let mut stmt = conn.prepare(
+                    "SELECT id, note, created_at FROM user_notes ORDER BY created_at DESC",
+                )?;
+                let notes = stmt.query_map(params![], |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })?;
+
+                let mut count = 0;
+                for note in notes {
+                    match note {
+                        Ok((id, note, created_at)) => {
+                            count += 1;
+                            println!("📝 ID: {}", id);
+                            println!("   Note: {}", note);
+                            println!("   Created: {}", created_at);
+                            println!("---");
+                        }
+                        Err(e) => {
+                            eprintln!("Error processing note: {}", e);
+                        }
+                    }
+                }
+                println!("📋 Found {} notes", count);
+            }
+            Err(e) => {
+                eprintln!("Error connecting to database: {}", e);
+            }
+        },
     }
 
     Ok(())
