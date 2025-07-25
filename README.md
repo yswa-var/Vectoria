@@ -2,7 +2,7 @@
 
 A powerful personal note management system built in Rust that combines vector embeddings with intelligent search capabilities.
 
-![Vectoria Screenshot](Screenshot%202025-07-25%20at%209.08.40%20PM.png)
+![FS Screenshot](https://raw.githubusercontent.com/yswa-var/Vectoria/main/Screenshot%202025-07-25%20at%209.08.40%E2%80%AFPM.png)
 
 Vectoria transforms how you manage and retrieve your personal notes by leveraging advanced AI techniques. Store your thoughts, documents, and ideas, then find them instantly using semantic search powered by BERT embeddings.
 
