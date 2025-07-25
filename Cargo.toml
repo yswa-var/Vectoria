@@ -1,7 +1,14 @@
 [package]
-name = "Vectoria"
+name = "vecto"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
+authors = ["Yashaswa Varshney yswa.var@icloud.com"]
+description = "A powerful personal note management system with semantic search capabilities"
+license = "MIT"
+repository = "https://github.com/yswa-var/Vectoria"
+keywords = ["cli", "notes", "search", "embeddings", "ai", "vector"]
+categories = ["command-line-utilities", "text-processing", "database"]
+readme = "README.md"
 
 [[bin]]
 name = "vecto"

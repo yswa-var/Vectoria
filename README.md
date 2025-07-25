@@ -17,43 +17,134 @@ Vectoria transforms how you manage and retrieve your personal notes by leveragin
 - **SQLite Database**: Fast, reliable local storage for your personal data
 - **Memory System**: Never lose important thoughts with persistent note storage
 
-## Installation
+## Quick Installation
+
+### Option 1: Using the Installation Script (Recommended)
 
 ```bash
-cargo build
+git clone https://github.com/yswa-var/Vectoria.git
+cd vecto
+./install.sh
+```
+
+### Option 2: Using Cargo (Requires Rust)
+
+```bash
+cargo install vecto
+git clone https://github.com/yourusername/vecto.git
+cd vecto
+cargo install --path .
 ```
 
 ## Usage
+
+Once installed, you can use `vecto` from anywhere in your terminal:
+
+```bash
+# Get help
+vecto --help
+
+# See all available commands
+vecto --help
+```
 
 ### Note Management
 
 ```bash
 # Store a new note
-cargo run -- remember "Meeting with Yash tomorrow at 2 PM for helping in his job search"
+vecto remember "Meeting with Yash tomorrow at 2 PM for helping in his job search"
 
 # List all your notes
-cargo run -- list-notes
+vecto list-notes
 
 # Remove a note by ID
-cargo run -- forget <id>
+vecto forget <id>
 ```
 
 ### Document Processing
 
 ```bash
 # Upload and process a text file
-cargo run -- upload <filename>
+vecto upload <filename>
 
-# List all processed documents
-cargo run -- list
+# List all documents
+vecto list
 ```
 
 ### Search & Retrieval
 
 ```bash
-cargo run -- search <query>
-cargo run -- vector-search <query>
-cargo run -- rag <query>
+# Search for similar content
+vecto search <query>
+
+# Perform vector similarity search
+vecto vector-search <query>
+
+# Use RAG (Retrieval-Augmented Generation)
+vecto rag <query>
+```
+
+## Examples
+
+```bash
+# Store some notes
+vecto remember "Important: Review quarterly reports by Friday"
+vecto remember "Meeting notes: Discuss new product features with team"
+vecto remember "Todo: Call client about project timeline"
+
+# Search for notes
+vecto search "quarterly reports"
+vecto vector-search "product features"
+vecto rag "What meetings do I have scheduled?"
+
+# Process a document
+vecto upload my_document.txt
+vecto list
+
+# View all notes
+vecto list-notes
+```
+
+## Configuration
+
+### Environment Variables
+
+- `OPENAI_API_KEY`: Set this for RAG functionality (optional, uses demo mode if not set)
+
+### Database
+
+The application uses SQLite for local storage. The database file (`embeddings.db`) is created automatically in the current directory.
+
+## Development
+
+### Building from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/vecto.git
+cd vecto
+
+# Build the project
+cargo build --release
+
+# Run tests
+cargo test
+
+# Install locally
+cargo install --path .
+```
+
+### Project Structure
+
+```
+vecto/
+├── src/
+│   └── main.rs          # Main CLI application
+├── models/               # BERT model files
+├── embeddings.db         # SQLite database
+├── Cargo.toml           # Rust dependencies
+├── install.sh           # Installation script
+└── README.md           # This file
 ```
 
 ## Database Schema
@@ -70,3 +161,32 @@ cargo run -- rag <query>
 - `serde`: JSON serialization
 - `chrono`: Timestamp handling
 - `anyhow`: Error handling
+- `tokio`: Async runtime
+- `reqwest`: HTTP client for OpenAI API
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature-name`
+3. Commit your changes: `git commit -am 'Add feature'`
+4. Push to the branch: `git push origin feature-name`
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+- 📖 [Documentation](https://github.com/yourusername/vecto/wiki)
+- 🐛 [Report Issues](https://github.com/yourusername/vecto/issues)
+- 💬 [Discussions](https://github.com/yourusername/vecto/discussions)
+
+## Roadmap
+
+- [ ] Web interface
+- [ ] Mobile app
+- [ ] Cloud sync
+- [ ] Advanced search filters
+- [ ] Export/import functionality
+- [ ] Plugin system
