@@ -98,3 +98,7 @@ Successfully stored 39 embeddings in database
 - **Metadata Tracking**: Each embedding includes file source, chunk index, and timestamp
 - **JSON Serialization**: Vector embeddings are stored as JSON strings for flexibility
 - **Query Interface**: Easy listing and inspection of stored embeddings
+
+```
+export OPENAI_API_KEY='your-api-key-here'
+```

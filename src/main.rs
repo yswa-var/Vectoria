@@ -1,6 +1,7 @@
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use regex::Regex;
+use reqwest::Client;
 use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -21,6 +22,7 @@ enum Commands {
     List,
     Search { query: String },
     VectorSearch { query: String },
+    RAG { question: String },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +34,30 @@ struct ChunkEmbedding {
     embedding: String, // JSON string of Vec<f32>
     vocabulary_size: usize,
     created_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct OpenAIMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIRequest {
+    model: String,
+    messages: Vec<OpenAIMessage>,
+    temperature: f32,
+    max_tokens: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIResponse {
+    choices: Vec<OpenAIChoice>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIChoice {
+    message: OpenAIMessage,
 }
 
 fn process_file(file: &str, no_lines: usize) -> Vec<Vec<String>> {
@@ -294,6 +320,77 @@ fn vector_search(
     Ok(similarities)
 }
 
+fn build_rag_prompt(context: &str, question: &str) -> String {
+    format!(
+        "Based on the following context, please answer the question. If the context doesn't contain enough information to answer the question, say so.\n\nContext:\n{}\n\nQuestion: {}\n\nAnswer:",
+        context, question
+    )
+}
+
+async fn query_openai(prompt: &str, api_key: &str) -> Result<String> {
+    let client = Client::new();
+    let url = "https://api.openai.com/v1/chat/completions";
+
+    let request = OpenAIRequest {
+        model: "gpt-3.5-turbo".to_string(),
+        messages: vec![OpenAIMessage {
+            role: "user".to_string(),
+            content: prompt.to_string(),
+        }],
+        temperature: 0.7,
+        max_tokens: 500,
+    };
+
+    let response = client
+        .post(url)
+        .header("Authorization", format!("Bearer {}", api_key))
+        .header("Content-Type", "application/json")
+        .json(&request)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        let openai_response: OpenAIResponse = response.json().await?;
+        if let Some(choice) = openai_response.choices.first() {
+            Ok(choice.message.content.clone())
+        } else {
+            Err(anyhow::anyhow!("No response from OpenAI"))
+        }
+    } else {
+        let error_text = response.text().await?;
+        Err(anyhow::anyhow!("OpenAI API error: {}", error_text))
+    }
+}
+
+async fn rag_search(conn: &Connection, question: &str, api_key: &str) -> Result<String> {
+    // Get top 3 most similar chunks for context
+    let results = vector_search(conn, question, 3)?;
+
+    if results.is_empty() {
+        return Ok("No relevant context found to answer your question.".to_string());
+    }
+
+    // Concatenate the context from top chunks
+    let context: String = results
+        .iter()
+        .map(|(chunk, _)| chunk.text_content.as_str())
+        .collect::<Vec<&str>>()
+        .join("\n\n");
+
+    // Build the RAG prompt
+    let prompt = build_rag_prompt(&context, question);
+
+    // If using demo key, just return the prompt for demonstration
+    if api_key == "demo_key" {
+        return Ok(format!("🔍 RAG Prompt Generated:\n\n{}", prompt));
+    }
+
+    // Query OpenAI
+    let answer = query_openai(&prompt, api_key).await?;
+
+    Ok(answer)
+}
+
 fn setup_database() -> Result<Connection> {
     let conn = Connection::open("embeddings.db")?;
 
@@ -404,7 +501,8 @@ fn list_embeddings(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+#[tokio::main]
+async fn main() -> Result<()> {
     let cli = Cli::parse();
 
     match &cli.command {
@@ -525,6 +623,33 @@ fn main() -> Result<()> {
                                 [..chunk_embedding.text_content.len().min(50)] // Preview text
                         );
                         println!("---");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error connecting to database: {}", e);
+                }
+            }
+        }
+        Commands::RAG { question } => {
+            // Get API key from environment variable
+            let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| {
+                eprintln!("Warning: OPENAI_API_KEY environment variable not set. Using demo mode.");
+                "demo_key".to_string()
+            });
+
+            match setup_database() {
+                Ok(conn) => {
+                    println!("🤖 RAG Search for: '{}'", question);
+                    println!("🔍 Retrieving relevant context...");
+
+                    match rag_search(&conn, question, &api_key).await {
+                        Ok(answer) => {
+                            println!("📝 Answer:");
+                            println!("{}", answer);
+                        }
+                        Err(e) => {
+                            eprintln!("Error during RAG search: {}", e);
+                        }
                     }
                 }
                 Err(e) => {
