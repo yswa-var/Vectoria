@@ -28,6 +28,8 @@ enum Commands {
     VectorSearch { query: String },
     #[command(about = "Retrieval-Augmented Generation with context")]
     RAG { question: String },
+    #[command(about = "Interactive chat using Ollama models with RAG context")]
+    Chat,
     #[command(about = "Store a note in memory")]
     Remember {
         #[arg(help = "The note to remember")]
@@ -48,7 +50,7 @@ struct ChunkEmbedding {
     file_name: String,
     chunk_index: usize,
     text_content: String,
-    embedding: String, // JSON string of Vec<f32>
+    embedding: String,
     vocabulary_size: usize,
     created_at: String,
 }
@@ -82,6 +84,36 @@ struct OpenAIResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAIChoice {
     message: OpenAIMessage,
+}
+
+// ---- Ollama API types ----
+#[derive(Debug, Deserialize)]
+struct OllamaTagsResponse {
+    models: Vec<OllamaModelTag>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaModelTag {
+    name: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct OllamaMessage {
+    role: String,
+    content: String,
+}
+
+#[derive(Debug, Serialize)]
+struct OllamaChatRequest {
+    model: String,
+    messages: Vec<OllamaMessage>,
+    stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct OllamaChatResponse {
+    message: OllamaMessage,
+    done: bool,
 }
 
 fn process_file(file: &str, no_lines: usize) -> Vec<Vec<String>> {
@@ -272,31 +304,21 @@ fn vector_search(
     query: &str,
     top_k: usize,
 ) -> Result<Vec<(ChunkEmbedding, f32)>> {
-    // Check if there are any embeddings in the database
     let mut stmt = conn.prepare("SELECT COUNT(*) FROM chunk_embeddings")?;
     let count: i64 = stmt.query_row(params![], |row| row.get(0))?;
-
     if count == 0 {
-        // No embeddings in database, return empty result
         return Ok(Vec::new());
     }
-
-    // Load the embedder to get vocabulary and IDF scores
     let mut embedder = SimpleEmbedder::new();
 
-    // Get all stored embeddings to rebuild vocabulary
     let mut stmt = conn.prepare("SELECT DISTINCT vocabulary_size FROM chunk_embeddings ORDER BY vocabulary_size DESC LIMIT 1")?;
     let _vocab_size: usize = stmt.query_row(params![], |row| row.get(0))?;
-
-    // Rebuild vocabulary from stored data (simplified approach)
-    // In a real system, you'd want to store the vocabulary separately
     let mut all_chunks: Vec<Vec<String>> = Vec::new();
     let mut stmt = conn.prepare("SELECT text_content FROM chunk_embeddings")?;
     let chunks = stmt.query_map(params![], |row| {
         let text: String = row.get(0)?;
         Ok(text.lines().map(|s| s.to_string()).collect::<Vec<String>>())
     })?;
-
     for chunk in chunks {
         if let Ok(chunk_vec) = chunk {
             all_chunks.push(chunk_vec);
@@ -306,11 +328,7 @@ fn vector_search(
     if !all_chunks.is_empty() {
         embedder.fit(&all_chunks);
     }
-
-    // Embed the query
     let query_embedding = embedder.embed_query(query);
-
-    // Get all stored embeddings and compute similarities
     let mut stmt = conn.prepare("SELECT id, file_name, chunk_index, text_content, embedding, vocabulary_size, created_at FROM chunk_embeddings")?;
     let chunk_embeddings = stmt.query_map(params![], |row| {
         Ok(ChunkEmbedding {
@@ -325,11 +343,9 @@ fn vector_search(
     })?;
 
     let mut similarities: Vec<(ChunkEmbedding, f32)> = Vec::new();
-
     for embedding in chunk_embeddings {
         match embedding {
             Ok(chunk_embedding) => {
-                // Parse the stored embedding
                 match serde_json::from_str::<Vec<f32>>(&chunk_embedding.embedding) {
                     Ok(stored_embedding) => {
                         let similarity = cosine_similarity(&query_embedding, &stored_embedding);
@@ -346,7 +362,6 @@ fn vector_search(
         }
     }
 
-    // Sort by similarity (descending) and take top_k
     similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     similarities.truncate(top_k);
 
@@ -368,7 +383,6 @@ fn search_user_notes(conn: &Connection, query: &str) -> Result<Vec<(UserNote, f3
     for note in notes {
         match note {
             Ok(user_note) => {
-                // Simple text similarity using word overlap
                 let query_lower = query.to_lowercase();
                 let note_lower = user_note.note.to_lowercase();
                 let query_words: std::collections::HashSet<&str> =
@@ -395,7 +409,6 @@ fn search_user_notes(conn: &Connection, query: &str) -> Result<Vec<(UserNote, f3
         }
     }
 
-    // Sort by similarity (descending)
     similarities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
     Ok(similarities)
@@ -444,20 +457,16 @@ async fn query_openai(prompt: &str, api_key: &str) -> Result<String> {
 }
 
 async fn rag_search(conn: &Connection, question: &str, api_key: &str) -> Result<String> {
-    // Get top 3 most similar chunks for context
     let chunk_results = vector_search(conn, question, 3)?;
 
-    // Get top 3 most similar user notes
     let note_results = search_user_notes(conn, question)?;
 
     let mut all_contexts: Vec<String> = Vec::new();
 
-    // Add chunk contexts
     for (chunk, _) in chunk_results {
         all_contexts.push(format!("[Document Chunk]: {}", chunk.text_content));
     }
 
-    // Add note contexts
     for (note, _) in note_results.iter().take(3) {
         all_contexts.push(format!("[User Note]: {}", note.note));
     }
@@ -466,27 +475,76 @@ async fn rag_search(conn: &Connection, question: &str, api_key: &str) -> Result<
         return Ok("No relevant context found to answer your question.".to_string());
     }
 
-    // Concatenate all contexts
     let context: String = all_contexts.join("\n\n");
 
-    // Build the RAG prompt
     let prompt = build_rag_prompt(&context, question);
 
-    // If using demo key, just return the prompt for demonstration
     if api_key == "demo_key" {
         return Ok(format!("🔍 RAG Prompt Generated:\n\n{}", prompt));
     }
 
-    // Query OpenAI
     let answer = query_openai(&prompt, api_key).await?;
 
     Ok(answer)
 }
 
+fn build_rag_context(conn: &Connection, question: &str) -> Result<Option<String>> {
+    let chunk_results = vector_search(conn, question, 3)?;
+    let note_results = search_user_notes(conn, question)?;
+
+    let mut all_contexts: Vec<String> = Vec::new();
+    for (chunk, _) in chunk_results {
+        all_contexts.push(format!("[Document Chunk]: {}", chunk.text_content));
+    }
+    for (note, _) in note_results.iter().take(3) {
+        all_contexts.push(format!("[User Note]: {}", note.note));
+    }
+
+    if all_contexts.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(all_contexts.join("\n\n")))
+    }
+}
+
+async fn list_ollama_models(client: &Client) -> Result<Vec<String>> {
+    let url = "http://localhost:11434/api/tags";
+    let resp = client.get(url).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!(format!(
+            "Failed to list Ollama models: {} - {}",
+            status, txt
+        )));
+    }
+    let tags: OllamaTagsResponse = resp.json().await?;
+    Ok(tags.models.into_iter().map(|m| m.name).collect())
+}
+
+async fn ollama_chat(client: &Client, model: &str, messages: &[OllamaMessage]) -> Result<String> {
+    let url = "http://localhost:11434/api/chat";
+    let req = OllamaChatRequest {
+        model: model.to_string(),
+        messages: messages.to_vec(),
+        stream: false,
+    };
+    let resp = client.post(url).json(&req).send().await?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let txt = resp.text().await.unwrap_or_default();
+        return Err(anyhow::anyhow!(format!(
+            "Ollama chat failed: {} - {}",
+            status, txt
+        )));
+    }
+    let body: OllamaChatResponse = resp.json().await?;
+    Ok(body.message.content)
+}
+
 fn setup_database() -> Result<Connection> {
     let conn = Connection::open("embeddings.db")?;
 
-    // Create tables if they don't exist
     conn.execute(
         "CREATE TABLE IF NOT EXISTS chunk_embeddings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -500,7 +558,6 @@ fn setup_database() -> Result<Connection> {
         params![],
     )?;
 
-    // Create user_notes table
     conn.execute(
         "CREATE TABLE IF NOT EXISTS user_notes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -525,11 +582,11 @@ fn store_embeddings(
 
     for (i, (chunk, embedding)) in line_chunks.iter().zip(all_embeddings.iter()).enumerate() {
         let chunk_embedding = ChunkEmbedding {
-            id: None, // SQLite will generate the ID
+            id: None,
             file_name: file_name.to_string(),
             chunk_index: i,
-            text_content: chunk.join("\n"), // Store text content as a single string
-            embedding: serde_json::to_string(embedding)?, // Serialize embedding to JSON string
+            text_content: chunk.join("\n"),
+            embedding: serde_json::to_string(embedding)?,
             vocabulary_size,
             created_at: now.clone(),
         };
@@ -590,7 +647,7 @@ fn list_embeddings(conn: &Connection) -> Result<()> {
                 println!("  Created: {}", chunk_embedding.created_at);
                 println!(
                     "  Text Preview: {:?}",
-                    &chunk_embedding.text_content[..chunk_embedding.text_content.len().min(20)] // Preview text
+                    &chunk_embedding.text_content[..chunk_embedding.text_content.len().min(20)]
                 );
                 println!("---");
             }
@@ -643,7 +700,6 @@ async fn main() -> Result<()> {
                     println!("non-zero elements: {:.2}", avg_non_zero);
                 }
 
-                // Store embeddings in database
                 match setup_database() {
                     Ok(conn) => {
                         if let Err(e) = store_embeddings(
@@ -708,22 +764,22 @@ async fn main() -> Result<()> {
             match setup_database() {
                 Ok(conn) => {
                     let results = vector_search(&conn, &query, 5)?;
-                    println!("🔍 Vector Search Results for '{}':", query);
+                    println!("Vector Search Results for '{}':", query);
                     println!("Found {} most similar chunks:", results.len());
                     for (i, (chunk_embedding, similarity)) in results.iter().enumerate() {
-                        println!("  🏆 Rank {} (Similarity: {:.4})", i + 1, similarity);
-                        println!("  📄 File: {}", chunk_embedding.file_name);
-                        println!("  📍 Chunk Index: {}", chunk_embedding.chunk_index);
-                        println!("  📊 Vocabulary Size: {}", chunk_embedding.vocabulary_size);
+                        println!("   Rank {} (Similarity: {:.4})", i + 1, similarity);
+                        println!("   File: {}", chunk_embedding.file_name);
+                        println!("   Chunk Index: {}", chunk_embedding.chunk_index);
+                        println!("   Vocabulary Size: {}", chunk_embedding.vocabulary_size);
                         println!(
-                            "  🔢 Embedding Dimensions: {}",
+                            "   Embedding Dimensions: {}",
                             serde_json::from_str::<Vec<f32>>(&chunk_embedding.embedding)?.len()
                         );
-                        println!("  📅 Created: {}", chunk_embedding.created_at);
+                        println!("   Created: {}", chunk_embedding.created_at);
                         println!(
-                            "  📝 Text Preview: {:?}",
+                            "   Text Preview: {:?}",
                             &chunk_embedding.text_content
-                                [..chunk_embedding.text_content.len().min(50)] // Preview text
+                                [..chunk_embedding.text_content.len().min(50)]
                         );
                         println!("---");
                     }
@@ -734,7 +790,6 @@ async fn main() -> Result<()> {
             }
         }
         Commands::RAG { question } => {
-            // Get API key from environment variable
             let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_else(|_| {
                 eprintln!("Warning: OPENAI_API_KEY environment variable not set. Using demo mode.");
                 "demo_key".to_string()
@@ -742,12 +797,12 @@ async fn main() -> Result<()> {
 
             match setup_database() {
                 Ok(conn) => {
-                    println!("🤖 RAG Search for: '{}'", question);
-                    println!("🔍 Retrieving relevant context...");
+                    println!("RAG Search for: '{}'", question);
+                    println!("Retrieving relevant context...");
 
                     match rag_search(&conn, question, &api_key).await {
                         Ok(answer) => {
-                            println!("📝 Answer:");
+                            println!("Answer:");
                             println!("{}", answer);
                         }
                         Err(e) => {
@@ -757,6 +812,103 @@ async fn main() -> Result<()> {
                 }
                 Err(e) => {
                     eprintln!("Error connecting to database: {}", e);
+                }
+            }
+        }
+        Commands::Chat => {
+            // Initialize HTTP client and database
+            let client = Client::new();
+            println!("Querying Ollama for available models on http://localhost:11434 ...");
+            let models = match list_ollama_models(&client).await {
+                Ok(list) if !list.is_empty() => list,
+                Ok(_) => {
+                    eprintln!("No models found. Pull a model with 'ollama pull llama3.1' (for example). ");
+                    return Ok(());
+                }
+                Err(e) => {
+                    eprintln!("Error listing models from Ollama: {}", e);
+                    eprintln!("Ensure Ollama is running: 'ollama serve' or the macOS app is open.");
+                    return Ok(());
+                }
+            };
+
+            println!("Available models:");
+            for (i, name) in models.iter().enumerate() {
+                println!("  {}. {}", i + 1, name);
+            }
+            println!("Enter the number of the model to use:");
+
+            let mut input = String::new();
+            std::io::stdin().read_line(&mut input).expect("failed to read input");
+            let selection: usize = match input.trim().parse::<usize>() {
+                Ok(n) if n >= 1 && n <= models.len() => n - 1,
+                _ => {
+                    eprintln!("Invalid selection.");
+                    return Ok(());
+                }
+            };
+            let model_name = models[selection].clone();
+            println!("Using model: {}", model_name);
+
+            let conn = match setup_database() {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("Error connecting to database: {}", e);
+                    return Ok(());
+                }
+            };
+
+            println!("💬 Entering chat. Type 'exit' or 'quit' to leave.\n");
+
+            let mut history: Vec<OllamaMessage> = Vec::new();
+
+            loop {
+                print!("You: ");
+                use std::io::Write;
+                std::io::stdout().flush().ok();
+
+                let mut user_input = String::new();
+                if std::io::stdin().read_line(&mut user_input).is_err() {
+                    eprintln!("Failed to read input");
+                    continue;
+                }
+                let user_input = user_input.trim();
+                if user_input.is_empty() {
+                    continue;
+                }
+                if matches!(user_input, "exit" | "quit" | ":q") {
+                    println!("Exiting chat.");
+                    break;
+                }
+
+                let context_opt = match build_rag_context(&conn, user_input) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        eprintln!("RAG context error: {}", e);
+                        None
+                    }
+                };
+
+                let mut messages: Vec<OllamaMessage> = Vec::new();
+                if let Some(context) = context_opt {
+                    let system_content = format!(
+                        "You are an assistant using the provided context to answer. If the context is insufficient, say so.\n\nContext:\n{}",
+                        context
+                    );
+                    messages.push(OllamaMessage { role: "system".to_string(), content: system_content });
+                }
+                messages.extend(history.clone());
+                messages.push(OllamaMessage { role: "user".to_string(), content: user_input.to_string() });
+
+                match ollama_chat(&client, &model_name, &messages).await {
+                    Ok(answer) => {
+                        println!("Assistant: {}\n", answer.trim());
+                        history.push(OllamaMessage { role: "user".to_string(), content: user_input.to_string() });
+                        history.push(OllamaMessage { role: "assistant".to_string(), content: answer });
+                    }
+                    Err(e) => {
+                        eprintln!("Chat error: {}", e);
+                    }
                 }
             }
         }
@@ -770,7 +922,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = result {
                     eprintln!("Error storing note: {}", e);
                 } else {
-                    println!("✅ Note stored successfully with ID: {}", result.unwrap());
+                    println!("Noted ✔️");
                 }
             }
             Err(e) => {
@@ -783,7 +935,7 @@ async fn main() -> Result<()> {
                 if let Err(e) = result {
                     eprintln!("Error deleting note: {}", e);
                 } else {
-                    println!("🗑️ Note with ID {} deleted successfully.", id);
+                    println!("Note with ID {} deleted successfully.", id);
                 }
             }
             Err(e) => {
@@ -808,7 +960,7 @@ async fn main() -> Result<()> {
                     match note {
                         Ok((id, note, created_at)) => {
                             count += 1;
-                            println!("📝 ID: {}", id);
+                            println!("ID: {}", id);
                             println!("   Note: {}", note);
                             println!("   Created: {}", created_at);
                             println!("---");
@@ -818,7 +970,7 @@ async fn main() -> Result<()> {
                         }
                     }
                 }
-                println!("📋 Found {} notes", count);
+                println!("Found {} notes", count);
             }
             Err(e) => {
                 eprintln!("Error connecting to database: {}", e);
