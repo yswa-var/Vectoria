@@ -567,7 +567,6 @@ fn setup_database() -> Result<Connection> {
         params![],
     )?;
 
-    println!("Connected to SQLite database successfully");
     Ok(conn)
 }
 
