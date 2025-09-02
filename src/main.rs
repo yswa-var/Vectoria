@@ -141,10 +141,6 @@ impl SimpleEmbedder {
                 t
             }
             Err(e) => {
-                eprintln!(
-                    "Warning: Could not load tokenizer from file: {}. Using simple word splitting as fallback",
-                    e
-                );
                 Tokenizer::from_file("models/bert-base-uncased-tokenizer.json").unwrap_or_else(
                     |_| {
                         panic!("Failed to load tokenizer and fallback also failed");
