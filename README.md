@@ -20,6 +20,10 @@ Vectoria transforms how you manage and retrieve your personal notes by leveragin
 ## Quick Installation
 
 ### Using the Installation Script 
+```bash
+brew install vectoria
+vecto --help
+```
 
 ```bash
 git clone https://github.com/yswa-var/Vectoria.git
